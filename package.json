@@ -1,0 +1,24 @@
+{
+  "name": "flux-native",
+  "version": "1.0.36",
+  "description": "Simple, safe flux library for React",
+  "main": "index.js",
+  "bin": "bin/flux-native",
+  "scripts": {
+    "test": "jest"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {},
+  "devDependencies": {
+    "@babel/plugin-transform-modules-commonjs": "^7.6.0",
+    "gulp": "^4.0.2",
+    "gulp-zip": "^5.0.0",
+    "ink": "^2.4.0",
+    "jest": "^24.8.0",
+    "jest-junit": "^8.0.0",
+    "prettier": "^1.18.2",
+    "react": "^16.10.2"
+  },
+  "jest": {}
+}
