@@ -1,4 +1,10 @@
-import { cleanup, dispatch, getState, subscribe } from "../index";
+import {
+  cleanup,
+  createAccessor,
+  dispatch,
+  getState,
+  subscribe
+} from "../index";
 
 beforeEach(() => {
   cleanup();
@@ -121,4 +127,34 @@ test("Should support transaction with conflict", async () => {
   dispatch(ActionThatUseTransaction);
   await delayIn(300);
   expect(stateChanges.length).toBe(0);
+});
+
+test("createAccessor(prop, defaultValue) getter", () => {
+  const $count = createAccessor("count", 1);
+
+  expect($count({})).toBe(1);
+  expect($count({ count: 2 })).toBe(2);
+});
+
+test("createAccessor(prop, defaultValue) setter", () => {
+  const $count = createAccessor("count", 1);
+  const $prop1 = createAccessor("prop1");
+  const $prop2 = createAccessor("prop2");
+
+  expect($count({}, 1)).toEqual({ count: 1 });
+  const original = {};
+  const change1 = $prop1(original, 1);
+  const change2 = $prop2(change1, 1);
+
+  expect(change1).not.toBe(original);
+  expect(change1).not.toBe(change2);
+  expect(change2).not.toBe(original);
+  expect(change2).toEqual({ prop1: 1, prop2: 1 });
+
+  const change3 = $prop1(original, 1, original);
+  const change4 = $prop2(change3, 1, original);
+
+  expect(change3).not.toBe(original);
+  expect(change3).toBe(change4);
+  expect(change4).toEqual({ prop1: 1, prop2: 1 });
 });

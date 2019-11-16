@@ -77,6 +77,13 @@ function dispatchAsyncAction(action, originalAction, parentContext) {
   return context;
 }
 
+function reduceState(accessors, currentState) {
+  return accessors.reduce(
+    (state, [accessor, value]) => accessor(state, value, currentState),
+    currentState
+  );
+}
+
 export function createActionContext(
   action,
   originalAction = action,
@@ -163,6 +170,9 @@ export function createActionContext(
       dispatchWrapper(() =>
         typeof nextState === "function"
           ? nextState(currentState, ...args)
+          : // is list of accessors
+          Array.isArray(nextState)
+          ? reduceState(nextState, currentState)
           : nextState
       );
 
@@ -376,6 +386,34 @@ export function useStore(...selectors) {
   return prevValuesRef.current;
 }
 
+export function createAccessor(getterOrProp, reducer, defaultValue) {
+  let getter = getterOrProp;
+  if (typeof getterOrProp !== "function") {
+    defaultValue = reducer;
+    const prop = getter;
+    reducer = (state, value, original) => {
+      if (state[prop] === value) return state;
+      if (!original || state === original) {
+        state = {
+          ...state
+        };
+      }
+      state[prop] = value;
+      return state;
+    };
+    getter = state => (prop in state ? state[prop] : defaultValue);
+  }
+  return function(state, value, original) {
+    if (arguments.length < 2) {
+      return getter(state);
+    }
+    if (!reducer) {
+      throw new Error("No reducer presents");
+    }
+    return reducer(state, value, original);
+  };
+}
+
 export function cleanup() {
   currentState = {};
   mainPublisher.unsubscribeAll();
@@ -497,9 +535,11 @@ function createDispatchAsync(dispatch) {
 }
 
 function internalDispatch(action, args, parentContext, skipNotification) {
-  const nextState = action(currentState, ...args);
+  let nextState = action(currentState, ...args);
   if (typeof nextState === "function") {
     return dispatchAsyncAction(nextState, action, parentContext);
+  } else if (Array.isArray(nextState)) {
+    nextState = reduceState(nextState, currentState);
   }
 
   if (nextState) {
@@ -515,7 +555,7 @@ function internalDispatch(action, args, parentContext, skipNotification) {
   return createActionContext(action);
 }
 
-function getValues(selectors) {
+export function getValues(selectors) {
   return selectors.map(selector =>
     typeof selector === "string"
       ? currentState[selector]
