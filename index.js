@@ -77,10 +77,14 @@ function dispatchAsyncAction(action, originalAction, parentContext) {
   return context;
 }
 
-function reduceState(accessors, currentState) {
-  return accessors.reduce(
-    (state, [accessor, value]) => accessor(state, value, currentState),
-    currentState
+function reduceState(reducers, state) {
+  // reduceState([accessor, value])
+  if (reducers.length === 2 && typeof reducers[0] === "function") {
+    reducers = [reducers];
+  }
+  return reducers.reduce(
+    (state, [accessor, value]) => accessor(state, value, state),
+    state
   );
 }
 
@@ -177,6 +181,9 @@ export function createActionContext(
       );
 
       return context;
+    },
+    reduce(reducers) {
+      return context.set(reduceState(reducers, currentState));
     },
     merge(props, ...args) {
       dispatchWrapper(prevState => {
@@ -386,13 +393,17 @@ export function useStore(...selectors) {
   return prevValuesRef.current;
 }
 
-export function createAccessor(getterOrProp, reducer, defaultValue) {
-  let getter = getterOrProp;
-  if (typeof getterOrProp !== "function") {
+export function createAccessor(getterOrPropName, reducer, defaultValue) {
+  let getter = getterOrPropName;
+  if (typeof getterOrPropName !== "function") {
     defaultValue = reducer;
     const prop = getter;
     reducer = (state, value, original) => {
-      if (state[prop] === value) return state;
+      const current = getter(state);
+      if (typeof value === "function") {
+        value = value(current);
+      }
+      if (current === value) return state;
       if (!original || state === original) {
         state = {
           ...state
@@ -555,12 +566,27 @@ function internalDispatch(action, args, parentContext, skipNotification) {
   return createActionContext(action);
 }
 
-export function getValues(selectors) {
+export function getValues(...args) {
+  if (args.length < 2) {
+    return getValues(currentState, args[0]);
+  }
+  const [state, selectors] = args;
   return selectors.map(selector =>
-    typeof selector === "string"
-      ? currentState[selector]
-      : selector(currentState)
+    typeof selector === "string" ? state[selector] : selector(state)
   );
 }
+
+export function getValue(state, selector) {
+  if (arguments.length < 2) {
+    return getValues(currentState, [state])[0];
+  }
+  return getValues(currentState, [selector])[0];
+}
+//
+// export function createDispatcher(action, { in: input, out: output } = {}) {
+//   return function (...args) {
+//
+//   }
+// }
 
 dispatch.async = createDispatchAsync(dispatch);

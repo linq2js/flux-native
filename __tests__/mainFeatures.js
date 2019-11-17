@@ -3,6 +3,7 @@ import {
   createAccessor,
   dispatch,
   getState,
+  getValue,
   subscribe
 } from "../index";
 
@@ -157,4 +158,12 @@ test("createAccessor(prop, defaultValue) setter", () => {
   expect(change3).not.toBe(original);
   expect(change3).toBe(change4);
   expect(change4).toEqual({ prop1: 1, prop2: 1 });
+});
+
+test("CounterApp with accessor", () => {
+  const $count = createAccessor("count", 0);
+  const Increase = () => [$count, current => current + 1];
+  dispatch(Increase);
+  dispatch(Increase);
+  expect(getValue($count)).toBe(2);
 });

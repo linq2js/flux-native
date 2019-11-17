@@ -1,6 +1,6 @@
 {
   "name": "flux-native",
-  "version": "1.0.37",
+  "version": "1.0.38",
   "description": "Simple, safe flux library for React",
   "main": "index.js",
   "bin": "bin/flux-native",
