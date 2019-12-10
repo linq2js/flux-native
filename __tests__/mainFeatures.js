@@ -1,14 +1,21 @@
 import {
+  __TEST__env,
   cleanup,
   createAccessor,
   dispatch,
   getState,
   getValue,
-  subscribe
+  subscribe,
+  env
 } from "../index";
 
 beforeEach(() => {
   cleanup();
+
+  // cleanup REACT_APP**
+  Object.keys(process.env).forEach(
+    key => /^REACT_APP/.test(key) && delete process.env[key]
+  );
 });
 
 const delayIn = milliseconds =>
@@ -141,8 +148,8 @@ test("createAccessor(prop, defaultValue) setter", () => {
   const $count = createAccessor("count", 1);
   const $prop1 = createAccessor("prop1");
   const $prop2 = createAccessor("prop2");
-
-  expect($count({}, 1)).toEqual({ count: 1 });
+  expect($count({}, 1)).toEqual({});
+  expect($count({}, 2)).toEqual({ count: 2 });
   const original = {};
   const change1 = $prop1(original, 1);
   const change2 = $prop2(change1, 1);
@@ -166,4 +173,21 @@ test("CounterApp with accessor", () => {
   dispatch(Increase);
   dispatch(Increase);
   expect(getValue($count)).toBe(2);
+});
+
+test("env", () => {
+  process.env.REACT_APP_PRO_VAR = "100";
+  process.env.REACT_APP_DEV_VAR = "200";
+  process.env.REACT_APP_COMMON = "common";
+  process.env.REACT_APP_TEMPLATE = "Amount = @{var}";
+
+  __TEST__env("PRO");
+  expect(env("var")).toBe("100");
+  expect(env("common")).toBe("common");
+  expect(env("template")).toBe("Amount = 100");
+
+  __TEST__env("DEV");
+  expect(env("var")).toBe("200");
+  expect(env("common")).toBe("common");
+  expect(env("template")).toBe("Amount = 200");
 });

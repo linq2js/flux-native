@@ -9,6 +9,8 @@ import {
   Fragment
 } from "react";
 
+let reactEnv = process.env.REACT_APP_ENV ? process.env.REACT_APP_ENV + "_" : "";
+let envCache = {};
 const defaultStateValidator = () => true;
 const defaultSafeStateValidator = (prev, next) => prev === next;
 const mainPublisher = createPublisher();
@@ -33,12 +35,20 @@ function createPublisher() {
   return {
     notify(...args) {
       for (const subscription of subscriptions) {
+        if (subscription.__suspended) continue;
         subscription(...args);
       }
     },
     subscribe(subscription) {
       subscriptions.add(subscription);
-      return () => subscriptions.delete(subscription);
+      return Object.assign(() => subscriptions.delete(subscription), {
+        suspend() {
+          subscription.__suspended = true;
+        },
+        resume() {
+          subscription.__suspended = false;
+        }
+      });
     },
     unsubscribeAll() {
       subscriptions.clear();
@@ -395,7 +405,9 @@ export function useStore(...selectors) {
 
 export function createAccessor(getterOrPropName, reducer, defaultValue) {
   let getter = getterOrPropName;
+  let propName;
   if (typeof getterOrPropName !== "function") {
+    propName = getterOrPropName;
     defaultValue = reducer;
     const prop = getter;
     reducer = (state, value, original) => {
@@ -412,17 +424,36 @@ export function createAccessor(getterOrPropName, reducer, defaultValue) {
       state[prop] = value;
       return state;
     };
-    getter = state => (prop in state ? state[prop] : defaultValue);
+    let defaultValueCache;
+    getter = state =>
+      prop in state
+        ? state[prop]
+        : defaultValueCache
+        ? defaultValueCache.value
+        : (defaultValueCache = {
+            value:
+              typeof defaultValue === "function" ? defaultValue() : defaultValue
+          }).value;
   }
-  return function(state, value, original) {
-    if (arguments.length < 2) {
-      return getter(state);
+  const accessor = Object.assign(
+    function(state, value, original) {
+      if (arguments.length < 2) {
+        return getter(state);
+      }
+      if (!reducer) {
+        throw new Error("No reducer presents");
+      }
+      return reducer(state, value, original);
+    },
+    {
+      isAccessor: true,
+      propName,
+      select: (...props) => (...args) =>
+        props.reduce((value, prop) => value[prop], accessor(...args))
     }
-    if (!reducer) {
-      throw new Error("No reducer presents");
-    }
-    return reducer(state, value, original);
-  };
+  );
+
+  return accessor;
 }
 
 export function cleanup() {
@@ -449,11 +480,38 @@ export function dispatchOnce(action, ...args) {
   dispatch(action, ...args);
 }
 
-export function subscribe(subscription, isWatcher) {
-  if (isWatcher) {
-    return mainWatchers.subscribe(subscription);
+/**
+ * subscribe(changeDetector, subscription)
+ * subscribe(subscription, isWatcher)
+ * @param args
+ * @return {function(): boolean}
+ */
+export function subscribe(...args) {
+  if (typeof args[1] === "function") {
+    const [changeDetector, subscription] = args;
+    const isAccessor = changeDetector.isAccessor === true;
+    let prevValue = isAccessor ? getState(changeDetector) : undefined;
+    const wrappedSubscription = isAccessor
+      ? (...args) => {
+          const currentValue = getState(changeDetector);
+          if (prevValue !== currentValue) {
+            prevValue = currentValue;
+            return subscription(...args);
+          }
+        }
+      : (...args) => {
+          if (changeDetector(currentState)) {
+            return subscription(...args);
+          }
+        };
+    return mainPublisher.subscribe(wrappedSubscription);
+  } else {
+    const [subscription, isWatcher] = args;
+    if (isWatcher) {
+      return mainWatchers.subscribe(subscription);
+    }
+    return mainPublisher.subscribe(subscription);
   }
-  return mainPublisher.subscribe(subscription);
 }
 
 export function useCallbacks(inputs, ...callbacks) {
@@ -576,11 +634,97 @@ export function getValues(...args) {
   );
 }
 
+export function createSelector(...args) {
+  const selector = args.pop();
+  const inputSelectors = args;
+  let lastInputValues;
+  let lastResult;
+  return function(...inputs) {
+    const inputValues = inputSelectors.map(inputSelector =>
+      inputSelector(...inputs)
+    );
+    if (
+      !lastInputValues ||
+      lastInputValues.some((value, index) => value !== inputValues[index])
+    ) {
+      lastInputValues = inputValues;
+      lastResult = selector(...inputValues);
+    }
+    return lastResult;
+  };
+}
+
 export function getValue(state, selector) {
   if (arguments.length < 2) {
     return getValues(currentState, [state])[0];
   }
   return getValues(currentState, [selector])[0];
+}
+
+/**
+ * get react app environment variable value
+ * no REACT_APP_ prefix needed
+ * example:
+ * .env.production
+ *  REACT_APP_PRO_DB=production_db
+ *  REACT_APP_DEV_DB=develop_db
+ *
+ *  if we run "REACT_APP_ENV=PRO npm build"
+ *  env('db') => production_db
+ *
+ *  if we run "REACT_APP_ENV=DEV npm build"
+ *  env('db') => develop_db
+ * @param name
+ * @return {string}
+ */
+export function env(name) {
+  const upperKeyName = name.toString().toUpperCase();
+  const fullKeyName = reactEnv + upperKeyName;
+  let value = internalEnv(fullKeyName);
+  // not exist
+  if (value === false) {
+    // try get env variable without REACT_APP_ENV prefix
+    value = internalEnv(upperKeyName);
+    if (value !== false) {
+      envCache[fullKeyName] = value;
+    }
+  }
+  return value === false ? "" : value;
+}
+
+function internalEnv(name) {
+  const keyName = `REACT_APP_${name}`;
+  if (keyName in envCache) {
+    return envCache[keyName];
+  }
+  let value = keyName in process.env ? process.env[keyName] : false;
+  if (value !== false && value.indexOf("@{") !== -1) {
+    // replace tokens ${other_env_name}
+    // make sure no circular ref
+    envCache[keyName] = "";
+    value = value.replace(/@\{([^}]+)}/g, (m, v) => env(v));
+  }
+  return (envCache[keyName] = value);
+}
+
+export function init(initializer) {
+  dispatchOnce(initializer);
+}
+
+export function lazySubscribe(changeDetector, lazyLoader) {
+  let promise;
+  return subscribe(changeDetector, (...args) => {
+    if (!promise) {
+      promise = lazyLoader();
+    }
+
+    promise.then(module => module.default(...args));
+  });
+}
+
+export function __TEST__env(newReactEnv = "", newEnvCache = {}) {
+  reactEnv = newReactEnv ? newReactEnv + "_" : "";
+  envCache = newEnvCache;
 }
 //
 // export function createDispatcher(action, { in: input, out: output } = {}) {
