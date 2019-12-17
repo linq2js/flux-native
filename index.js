@@ -6,11 +6,16 @@ import {
   lazy,
   createElement,
   Suspense,
-  Fragment
+  Fragment,
+  memo
 } from "react";
 
-let reactEnv = process.env.REACT_APP_ENV ? process.env.REACT_APP_ENV + "_" : "";
+let reactEnv = process.env.REACT_APP_ENV
+  ? process.env.REACT_APP_ENV.trim() + "_"
+  : "";
 let envCache = {};
+const isContextProp = "__CONTEXT__" + Math.random().toString(36);
+const syncIdProp = "__SYNC_ID__";
 const defaultStateValidator = () => true;
 const defaultSafeStateValidator = (prev, next) => prev === next;
 const mainPublisher = createPublisher();
@@ -23,8 +28,13 @@ const eventNames = {
   suspend: "suspend"
 };
 
+let currentId = 1;
 let currentState = {};
 let dispatchOnceKey = generateDispatchOnceKey();
+
+function uniqueId() {
+  return `${currentId++}-${Math.random().toString(36)}-${new Date().getTime()}`;
+}
 
 function notify(action) {
   mainPublisher.notify(action);
@@ -124,6 +134,7 @@ export function createActionContext(
   asyncDispatch.async = createDispatchAsync(dispatchWrapper);
 
   const context = {
+    [isContextProp]: true,
     __events: {},
     __validator: defaultStateValidator,
     __dispatchQueue: [],
@@ -708,7 +719,11 @@ function internalEnv(name) {
 }
 
 export function init(initializer) {
-  dispatchOnce(initializer);
+  if (typeof initializer !== "function") {
+    dispatch(() => initializer);
+  } else {
+    dispatchOnce(initializer);
+  }
 }
 
 export function lazySubscribe(changeDetector, lazyLoader) {
@@ -719,6 +734,199 @@ export function lazySubscribe(changeDetector, lazyLoader) {
     }
 
     promise.then(module => module.default(...args));
+  });
+}
+
+export function compose(...functions) {
+  if (functions.length === 0) {
+    return arg => arg;
+  }
+
+  if (functions.length === 1) {
+    return functions[0];
+  }
+
+  return functions.reduce((a, b) => (...args) => a(b(...args)));
+}
+
+export function hoc(...callbacks) {
+  return callbacks.reduce(
+    (nextHoc, callback) => Component => {
+      const MemoComponent = memo(Component);
+
+      return props => {
+        // callback requires props and Comp, it must return React element
+        if (callback.length > 1) {
+          return callback(props, MemoComponent);
+        }
+        let newProps = callback(props);
+        if (newProps === false) return null;
+        if (!newProps) {
+          newProps = props;
+        }
+
+        return createElement(MemoComponent, newProps);
+      };
+    },
+    Component => Component
+  );
+}
+
+export function getSyncId(obj) {
+  return obj[syncIdProp];
+}
+//
+// export function autoSync(
+//   accessor,
+//   syncer,
+//   { debounce = 0, $dispatch = dispatch } = {}
+// ) {
+//   const debouncedSyncer = createDebounce(async () => {
+//     const changes = accessor(currentState);
+//     const unsyncedItems = changes.filter(change => {
+//       if (change && !getSyncId(change)) {
+//         change[syncIdProp] = uniqueId();
+//         return true;
+//       }
+//       return false;
+//     });
+//
+//     if (unsyncedItems.length) {
+//       let mergeData;
+//       try {
+//         mergeData = await syncer(
+//           unsyncedItems.map(({ [syncIdProp]: skippedProp, ...item }) => item)
+//         );
+//       } finally {
+//         const currentChanges = accessor(currentState);
+//         // if there is something need to merge to current changes
+//         if (mergeData) {
+//           $dispatch(() => ({ set }) => {
+//             set([
+//               accessor,
+//               currentChanges => {
+//                 let hasChange = false;
+//                 let newChanges = currentChanges.map(currentChange => {
+//                   const currentSyncId = getSyncId(currentChange);
+//                   // not sync item
+//                   if (!currentSyncId) {
+//                     return currentChange;
+//                   }
+//                   const index = unsyncedItems.findIndex(
+//                     x => getSyncId(x) === currentSyncId
+//                   );
+//                   // this change might be belong to another sync session, not current
+//                   if (index === -1) {
+//                     return currentChange;
+//                   }
+//                   const newChange = { ...currentChange, ...mergeData[index] };
+//                   delete newChange[syncIdProp];
+//                   hasChange = true;
+//                   return newChange;
+//                 });
+//                 return hasChange ? newChanges : currentChanges;
+//               }
+//             ]);
+//           });
+//         } else {
+//           // just cleanup sync id
+//           unsyncedItems.forEach(syncItem => {
+//             const currentChange = currentChanges.find(
+//               x => getSyncId(x) === getSyncId(syncItem)
+//             );
+//             if (currentChange) {
+//               delete currentChange[syncIdProp];
+//             }
+//           });
+//         }
+//       }
+//     }
+//   }, debounce);
+//   return subscribe(accessor, debouncedSyncer);
+// }
+
+export function connect(
+  { pre = [], post = [], store = {}, actions = {}, memo = {} },
+  customizer
+) {
+  const actionDispatchers = {};
+  const $useStore = useStore;
+  const $useMemo = useMemo;
+  const storeSelectors = Object.values(store);
+  const storeKeys = Object.keys(store);
+  const propModifiers = Object.entries(memo).map(([propName, args]) => {
+    const selector = args.pop();
+    return props => {
+      const memoInputs = args.map(x => props[x]);
+      props[propName] = $useMemo(() => selector(...memoInputs), memoInputs);
+    };
+  });
+  Object.entries(actions).forEach(([key, action]) => {
+    // want to prepend some args before dispatching
+    if (Array.isArray(action)) {
+      const [innerAction, ...prependArgs] = action;
+      actionDispatchers[key] = (...args) =>
+        dispatch(innerAction, ...prependArgs, ...args);
+    } else {
+      actionDispatchers[key] = (...args) => dispatch(action, ...args);
+    }
+  });
+  return compose(
+    ...pre,
+    hoc(props => {
+      const newProps = { ...props, ...actionDispatchers };
+      const propValues = $useStore(...storeSelectors);
+      storeKeys.forEach(
+        (propName, index) => (newProps[propName] = propValues[index])
+      );
+      propModifiers.forEach(modifier => modifier(newProps));
+      Object.assign(newProps, props);
+      if (!customizer) return newProps;
+      return customizer(newProps);
+    }),
+    ...post
+  );
+}
+
+export function async(action, ...args) {
+  let onResolve, onReject;
+  const isMultiple = Array.isArray(action);
+  const actions = isMultiple ? action : [[action, ...args]];
+
+  const execute = async context => {
+    const promises = actions.map(
+      ([action, ...args]) =>
+        new Promise((resolve, reject) => {
+          const wrapper = (...args) => {
+            // this wrapper acts like reducer, so we not return anything to avoid state changing
+            action(...args);
+          };
+          context.dispatch(wrapper, { ...context, resolve, reject }, ...args);
+        })
+    );
+    return Promise.all(promises);
+  };
+  const func = function() {
+    if (arguments[0] && arguments[0][isContextProp] === true) {
+      // is context
+      const context = arguments[0];
+      execute(context).then(
+        results =>
+          onResolve &&
+          context.dispatch(onResolve, isMultiple ? results : results[0]),
+        error => onReject && context.dispatch(onReject, error)
+      );
+      return;
+    }
+    Object.assign(func, {
+      onResolve: (onResolve = arguments[0]),
+      onReject: (onReject = arguments[1])
+    });
+
+    return func;
+  };
+  return Object.assign(func, {
+    actions
   });
 }
 

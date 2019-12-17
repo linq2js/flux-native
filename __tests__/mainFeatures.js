@@ -6,7 +6,9 @@ import {
   getState,
   getValue,
   subscribe,
-  env
+  env,
+  init,
+  async
 } from "../index";
 
 beforeEach(() => {
@@ -18,8 +20,8 @@ beforeEach(() => {
   );
 });
 
-const delayIn = milliseconds =>
-  new Promise(resolve => setTimeout(resolve, milliseconds));
+const delayIn = (milliseconds, result) =>
+  new Promise(resolve => setTimeout(resolve, milliseconds, result));
 
 test("Singleton feature should work properly", async () => {
   dispatch(() => ({ count: 0 }));
@@ -191,3 +193,53 @@ test("env", () => {
   expect(env("common")).toBe("common");
   expect(env("template")).toBe("Amount = 200");
 });
+
+test("async()", async () => {
+  const $data = createAccessor("data");
+  const $done = createAccessor("done");
+  init([$data, "nothing"]);
+  const LoadDataPromiseFactory = (state, { resolve, reject }, params) =>
+    delayIn(100, `data:${params}`).then(resolve, reject);
+  const LoadDataAsync = () =>
+    async(LoadDataPromiseFactory, 100)(
+      (state, result) => [[$done, true], [$data, result]],
+      (state, error) => console.log(error)
+    );
+  dispatch(LoadDataAsync);
+  await delayIn(200);
+  expect(getState()).toEqual({ data: "data:100", done: true });
+});
+
+//
+// test("autoSync", async () => {
+//   const $cart = createAccessor("cart");
+//   let syncItems = [];
+//   dispatch(() => [$cart, []]);
+//
+//   const AddToCart = (state, ...items) => {
+//     return [$cart, [...$cart(state), ...items]];
+//   };
+//
+//   autoSync(
+//     $cart,
+//     items => {
+//       syncItems = items;
+//       console.log(items.length);
+//     },
+//     { debounce: 50 }
+//   );
+//
+//   dispatch(AddToCart, { productId: 1 });
+//
+//   expect(getState()).toEqual({ cart: [{ productId: 1 }] });
+//
+//   await delayIn(100);
+//
+//   dispatch(AddToCart, { productId: 2 }, { productId: 3 });
+//
+//   await delayIn(100);
+//
+//   expect(syncItems).toEqual([{ productId: 2 }, { productId: 3 }]);
+//
+//   await delayIn(2000);
+// }, 5000);
